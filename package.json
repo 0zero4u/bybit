@@ -1,0 +1,32 @@
+{
+  "name": "crypto-binance-listener",
+  "version": "1.0.0",
+  "description": "Node.js scripts to listen to Binance WebSocket bookTicker stream, process trend score, and relay data.",
+  "main": "binance_listener.js",
+  "scripts": {
+    "start-listener": "node binance_listener.js",
+    "start-receiver": "node data_receiver_server.js",
+    "pm2-start-listener": "pm2 start binance_listener.js --name binance-listener-prod",
+    "pm2-start-receiver": "pm2 start data_receiver_server.js --name data-receiver-prod",
+    "pm2-list": "pm2 list",
+    "pm2-stop-all": "pm2 stop all && pm2 delete all",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "crypto",
+    "binance",
+    "websocket",
+    "nodejs",
+    "bookticker",
+    "btcusdt",
+    "trend-score",
+    "data-feed"
+  ],
+  "author": "0zero4u",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "uWebSockets.js": "uNetworking/uWebSockets.js#v20.48.0",
+    "ws": "^8.17.0"
+  }
+}
