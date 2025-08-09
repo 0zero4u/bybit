@@ -49,7 +49,8 @@ let internalWsClient, exchangeWsClient;
 let last_sent_price = null;
 
 // Optimization: Reusable payload object to prevent GC pressure.
-const payload_to_send = { type: 'S', p: 0.0 };
+// --- MODIFIED: Added 'b' key to identify the exchange ---
+const payload_to_send = { type: 'S', p: 0.0, b: 'bybit' };
 
 /**
  * Establishes and maintains the connection to the internal WebSocket receiver.
