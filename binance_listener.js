@@ -1,4 +1,4 @@
-// okx_listener_optimized.js
+// bybit_listener_optimized.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -35,19 +35,18 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Configuration ---
-const SYMBOL = 'BTC-USDT';
+const SYMBOL = 'BTCUSDT';
 const RECONNECT_INTERVAL_MS = 5000;
-const SEND_INTERVAL_MS = 5; // New: Interval to send data to receiver
-const MINIMUM_TICK_SIZE = 0.2; // This is now used to decide when to *update* the price, not when to send
+const MINIMUM_TICK_SIZE = 0.1;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-const EXCHANGE_STREAM_URL = 'wss://ws.okx.com:8443/ws/v5/public';
+// --- MODIFIED: Updated URL to Bybit V5 Spot stream ---
+const EXCHANGE_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
 
 // --- WebSocket Clients and State ---
 let internalWsClient, exchangeWsClient;
 let last_sent_price = null;
-let latest_best_bid_price = null; // New: Stores the most recent bid price from the exchange
 
 // Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
@@ -60,10 +59,18 @@ function connectToInternalReceiver() {
 
     internalWsClient = new WebSocket(internalReceiverUrl);
 
+    // --- LOG ELIMINATED ---
+    // internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+
     internalWsClient.on('close', () => {
+        // --- LOG ELIMINATED ---
+        // console.error('[Internal] Connection closed. Reconnecting...');
         internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
+
+    // --- LOG ELIMINATED ---
+    // internalWsClient.on('open', () => console.log('[Internal] Connection established.')); 
 }
 
 /**
@@ -73,100 +80,98 @@ function connectToInternalReceiver() {
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
+            // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            // Error logging is eliminated
+            // --- LOG ELIMINATED ---
+            // console.error(`[Internal] Failed to send message: ${e.message}`);
         }
     }
 }
 
 /**
- * Establishes and maintains the connection to the OKX WebSocket stream.
+ * Establishes and maintains the connection to the Bybit WebSocket stream.
  */
 function connectToExchange() {
     exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
 
     exchangeWsClient.on('open', () => {
+        // --- LOG ELIMINATED ---
+        // console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
+        
+        // --- MODIFIED: Subscribe to the orderbook topic for BTCUSDT ---
         const subscriptionMessage = {
             op: "subscribe",
-            args: [{
-                channel: "bbo-tbt",
-                instId: SYMBOL
-            }]
+            args: [`orderbook.1.${SYMBOL}`]
         };
         try {
             exchangeWsClient.send(JSON.stringify(subscriptionMessage));
-        } catch (e) {
-            // Error logging is eliminated
+            // --- LOG ELIMINATED ---
+            // console.log(`[Bybit] Subscribed to ${subscriptionMessage.args[0]}`);
+        } catch(e) {
+            // --- LOG ELIMINATED ---
+            // console.error(`[Bybit] Failed to send subscription message: ${e.message}`);
         }
-        last_sent_price = null;
-        latest_best_bid_price = null;
+        
+        last_sent_price = null; // Reset on new connection
     });
 
     exchangeWsClient.on('message', (data) => {
-        if (data.toString() === 'pong') {
-            return;
-        }
-
         try {
             const message = JSON.parse(data.toString());
 
-            if (message.arg && message.arg.channel === 'bbo-tbt' && message.data && message.data.length > 0) {
-                const bboData = message.data[0];
-                const bids = bboData.bids;
-
-                if (bids && bids.length > 0) {
-                    const bestBidPrice = parseFloat(bids[0]);
+            // --- MODIFIED: Process Bybit orderbook data to get best bid price ---
+            if (message.topic && message.topic.startsWith('orderbook.1') && message.data) {
+                const bids = message.data.b;
+                
+                if (bids && bids.length > 0 && bids.length > 0) {
+                    const bestBidPrice = parseFloat(bids);
 
                     if (isNaN(bestBidPrice)) return;
 
-                    // --- MODIFIED: Update the latest bid price if it meets the tick size criteria ---
-                    const shouldUpdatePrice = (latest_best_bid_price === null) || (Math.abs(bestBidPrice - latest_best_bid_price) >= MINIMUM_TICK_SIZE);
+                    const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
 
-                    if (shouldUpdatePrice) {
-                        latest_best_bid_price = bestBidPrice;
+                    if (shouldSendPrice) {
+                        // Optimization: Mutate the single payload object instead of creating a new one.
+                        payload_to_send.p = bestBidPrice;
+                        sendToInternalClient(payload_to_send);
+                        last_sent_price = bestBidPrice;
                     }
                 }
             }
         } catch (e) {
-            // Error logging is eliminated
+            // --- LOG ELIMINATED ---
+            // console.error(`[Bybit] Error processing message: ${e.message}`);
         }
     });
+    
+    // --- LOG ELIMINATED ---
+    // exchangeWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
 
     exchangeWsClient.on('close', () => {
+        // --- LOG ELIMINATED ---
+        // console.error('[Bybit] Connection closed. Reconnecting...');
         exchangeWsClient = null; // Important to allow reconnection
         setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
     });
-
+    
+    // Bybit requires a ping every 20 seconds to keep the connection alive
     const heartbeatInterval = setInterval(() => {
         if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
             try {
-                exchangeWsClient.send('ping');
+                exchangeWsClient.send(JSON.stringify({ op: 'ping' }));
             } catch (e) {
-                // Error logging is eliminated
+                // --- LOG ELIMINATED ---
+                // console.error(`[Bybit] Failed to send ping: ${e.message}`);
             }
         } else {
             clearInterval(heartbeatInterval);
         }
-    }, 25000);
-}
-
-// --- MODIFIED: New function to send data on a fixed interval ---
-/**
- * Periodically sends the latest best bid price to the internal receiver.
- */
-function startSendingInterval() {
-    setInterval(() => {
-        // Only send if there's a valid, new price to report
-        if (latest_best_bid_price !== null && latest_best_bid_price !== last_sent_price) {
-            payload_to_send.p = latest_best_bid_price;
-            sendToInternalClient(payload_to_send);
-            last_sent_price = latest_best_bid_price; // Update the last sent price
-        }
-    }, SEND_INTERVAL_MS);
+    }, 20000);
 }
 
 // --- Script Entry Point ---
+// --- LOG ELIMINATED ---
+// console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToExchange();
-startSendingInterval(); // Start the new sending mechanism
+connectToExchange() ;
