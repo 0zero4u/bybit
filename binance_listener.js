@@ -1,4 +1,5 @@
-// bitrue_listener.js
+
+// bybit_listener_optimized.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -37,15 +38,19 @@ function cleanupAndExit(exitCode = 1) {
 // --- Configuration ---
 const SYMBOL = 'BTCUSDT';
 const RECONNECT_INTERVAL_MS = 5000;
+const MINIMUM_TICK_SIZE = 0.1;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-// --- MODIFIED: Updated URL to Bitrue WebSocket stream ---
-const EXCHANGE_STREAM_URL = 'wss://ws.bitrue.com/market/ws';
+// --- MODIFIED: Updated URL to Bybit V5 Spot stream ---
+const EXCHANGE_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
 
 // --- WebSocket Clients and State ---
 let internalWsClient, exchangeWsClient;
-let heartbeatInterval = null;
+let last_sent_price = null;
+
+// Optimization: Reusable payload object to prevent GC pressure.
+const payload_to_send = { type: 'S', p: 0.0 };
 
 /**
  * Establishes and maintains the connection to the internal WebSocket receiver.
@@ -55,93 +60,119 @@ function connectToInternalReceiver() {
 
     internalWsClient = new WebSocket(internalReceiverUrl);
 
+    // --- LOG ELIMINATED ---
+    // internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+
     internalWsClient.on('close', () => {
+        // --- LOG ELIMINATED ---
+        // console.error('[Internal] Connection closed. Reconnecting...');
         internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
+
+    // --- LOG ELIMINATED ---
+    // internalWsClient.on('open', () => console.log('[Internal] Connection established.')); 
 }
 
 /**
- * Sends raw data to the internal WebSocket client (no processing, just forwarding).
- * @param {Buffer} data - The raw data to send.
+ * Sends a payload to the internal WebSocket client.
+ * @param {object} payload - The data to send.
  */
-function sendToInternalClient(data) {
+function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
-            // Send raw compressed data directly to receiver for decompression
-            internalWsClient.send(data);
+            // The payload object is mutated and sent, not recreated.
+            internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            console.error(`[Internal] Failed to send message: ${e.message}`);
+            // --- LOG ELIMINATED ---
+            // console.error(`[Internal] Failed to send message: ${e.message}`);
         }
     }
 }
 
 /**
- * Establishes and maintains the connection to the Bitrue WebSocket stream.
+ * Establishes and maintains the connection to the Bybit WebSocket stream.
  */
 function connectToExchange() {
     exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
 
     exchangeWsClient.on('open', () => {
-        console.log(`[Bitrue] Connection established to: ${EXCHANGE_STREAM_URL}`);
-
-        // --- MODIFIED: Subscribe to Bitrue orderbook channel ---
+        // --- LOG ELIMINATED ---
+        // console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
+        
+        // --- MODIFIED: Subscribe to the orderbook topic for BTCUSDT ---
         const subscriptionMessage = {
-            "event": "sub",
-            "params": {
-                "cb_id": "btcusdt",
-                "channel": "market_btcusdt_simple_depth_step0"
-            }
+            op: "subscribe",
+            args: [`orderbook.1.${SYMBOL}`]
         };
-
         try {
             exchangeWsClient.send(JSON.stringify(subscriptionMessage));
-            console.log(`[Bitrue] Subscribed to ${subscriptionMessage.params.channel}`);
+            // --- LOG ELIMINATED ---
+            // console.log(`[Bybit] Subscribed to ${subscriptionMessage.args[0]}`);
         } catch(e) {
-            console.error(`[Bitrue] Failed to send subscription message: ${e.message}`);
+            // --- LOG ELIMINATED ---
+            // console.error(`[Bybit] Failed to send subscription message: ${e.message}`);
         }
-
-        // Setup ping/pong heartbeat - Bitrue server sends ping every 15 seconds
-        // We need to respond with pong within 1 minute
-        clearInterval(heartbeatInterval);
-        heartbeatInterval = null;
+        
+        last_sent_price = null; // Reset on new connection
     });
 
-    exchangeWsClient.on('message', (data, isBinary) => {
-        // Check if this is a ping message from server
-        if (!isBinary) {
-            try {
-                const textData = data.toString();
-                if (textData === 'ping') {
-                    // Respond to server ping with pong
-                    exchangeWsClient.send('pong');
-                    return;
+    exchangeWsClient.on('message', (data) => {
+        try {
+            const message = JSON.parse(data.toString());
+
+            // --- MODIFIED: Process Bybit orderbook data to get best bid price ---
+            if (message.topic && message.topic.startsWith('orderbook.1') && message.data) {
+                const bids = message.data.b;
+                
+                if (bids && bids.length > 0 && bids.length > 0) {
+                    const bestBidPrice = parseFloat(bids);
+
+                    if (isNaN(bestBidPrice)) return;
+
+                    const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
+
+                    if (shouldSendPrice) {
+                        // Optimization: Mutate the single payload object instead of creating a new one.
+                        payload_to_send.p = bestBidPrice;
+                        sendToInternalClient(payload_to_send);
+                        last_sent_price = bestBidPrice;
+                    }
                 }
-            } catch (e) {
-                // Not a text message, continue with normal processing
             }
+        } catch (e) {
+            // --- LOG ELIMINATED ---
+            // console.error(`[Bybit] Error processing message: ${e.message}`);
         }
-
-        // Forward all market data (compressed) to internal receiver for decompression and processing
-        sendToInternalClient(data);
     });
-
-    exchangeWsClient.on('error', (err) => {
-        console.error('[Bitrue] Connection error:', err.message);
-    });
+    
+    // --- LOG ELIMINATED ---
+    // exchangeWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
 
     exchangeWsClient.on('close', () => {
-        console.error('[Bitrue] Connection closed. Reconnecting...');
-        if (heartbeatInterval) {
-            clearInterval(heartbeatInterval);
-            heartbeatInterval = null;
-        }
+        // --- LOG ELIMINATED ---
+        // console.error('[Bybit] Connection closed. Reconnecting...');
         exchangeWsClient = null; // Important to allow reconnection
         setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
     });
+    
+    // Bybit requires a ping every 20 seconds to keep the connection alive
+    const heartbeatInterval = setInterval(() => {
+        if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
+            try {
+                exchangeWsClient.send(JSON.stringify({ op: 'ping' }));
+            } catch (e) {
+                // --- LOG ELIMINATED ---
+                // console.error(`[Bybit] Failed to send ping: ${e.message}`);
+            }
+        } else {
+            clearInterval(heartbeatInterval);
+        }
+    }, 20000);
 }
 
 // --- Script Entry Point ---
-console.log(`[Listener] Starting Bitrue Listener... PID: ${process.pid}`);
+// --- LOG ELIMINATED ---
+// console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToExchange(); 
+connectToExchange();
