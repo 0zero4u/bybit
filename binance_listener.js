@@ -41,7 +41,7 @@ const IMBALANCE_THRESHOLD_UPPER = 0.83;
 const IMBALANCE_THRESHOLD_LOWER = 0.17;
 const FAKE_PRICE_OFFSET = 1.0;
 // MODIFIED: Added listening window duration
-const IMBALANCE_WINDOW_MS = 25;
+const IMBALANCE_WINDOW_MS = 35;
 
 // --- URLS ---
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
