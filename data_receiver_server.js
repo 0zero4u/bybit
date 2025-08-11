@@ -31,7 +31,7 @@ function processBitrueOrderbook(bitrueData) {
             const bestBidPrice = parseFloat(bitrueData.tick.bids[0][0]);
 
             if (!isNaN(bestBidPrice)) {
-                const shouldSendPrice = (last_sent_price === null) || 
+                const shouldSendPrice = (last_sent_price === null) ||
                                       (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
 
                 if (shouldSendPrice) {
@@ -61,6 +61,9 @@ app.ws('/public', {
         // The client does not need to send any message. Its connection *is* the subscription.
         ws.subscribe(PRICE_BROADCAST_TOPIC);
 
+        // --- FIX: Add a flag to track connection state ---
+        ws.isAlive = true;
+
         const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
         console.log(`[Receiver] Client from ${clientIp} auto-subscribed to price stream.`);
     },
@@ -73,6 +76,13 @@ app.ws('/public', {
 
             if (request.event === 'set_mode' && request.mode === 'semi_auto') {
                 const response = await axios.get(BINANCE_TICKER_URL);
+
+                // --- FIX: Check if the socket was closed during the await ---
+                if (!ws.isAlive) {
+                    console.log('[Receiver] Client disconnected before async operation finished. Aborting send.');
+                    return; // Stop execution to prevent error
+                }
+
                 const lastPrice = parseFloat(response.data.lastPrice);
 
                 if (!isNaN(lastPrice)) {
@@ -90,6 +100,9 @@ app.ws('/public', {
     },
 
     close: (ws, code, message) => {
+        // --- FIX: Update the flag when the connection closes ---
+        ws.isAlive = false;
+
         // uWebSockets.js automatically handles unsubscribing the client. No action needed.
         console.log(`[Receiver] Client disconnected and was auto-unsubscribed.`);
     }
@@ -172,4 +185,3 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 console.log(`[Receiver] PID: ${process.pid} --- Server initialized with Bitrue support and gzip decompression.`);
-            
