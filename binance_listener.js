@@ -49,8 +49,7 @@ let internalWsClient, exchangeWsClient;
 let last_sent_price = null;
 
 // Optimization: Reusable payload object to prevent GC pressure.
-// --- MODIFIED: Added 'b' key to identify the exchange ---
-const payload_to_send = { type: 'S', p: 0.0, b: 'bybit' };
+const payload_to_send = { type: 'S', p: 0.0 };
 
 /**
  * Establishes and maintains the connection to the internal WebSocket receiver.
@@ -175,4 +174,4 @@ function connectToExchange() {
 // --- LOG ELIMINATED ---
 // console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToExchange() ;
+connectToExchange();
