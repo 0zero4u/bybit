@@ -1,5 +1,4 @@
-
-// binance_bookticker_listener.js
+// binance_listener_optimized.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -17,7 +16,7 @@ process.on('unhandledRejection', (reason, promise) => {
  * @param {number} [exitCode=1] - The exit code to use.
  */
 function cleanupAndExit(exitCode = 1) {
-    const clientsToTerminate = [internalWsClient, exchangeWsClient];
+    const clientsToTerminate = [internalWsClient, binanceWsClient];
     console.error('[Listener] Initiating cleanup...');
     clientsToTerminate.forEach(client => {
         if (client && (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING)) {
@@ -36,18 +35,18 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Configuration ---
-const SYMBOL = 'btcusdt'; // Binance uses lowercase for streams
+const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
-const MINIMUM_TICK_SIZE = 0.2;
+const MINIMUM_TICK_SIZE = 0.1;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 // --- MODIFIED: Updated URL to Binance Futures bookTicker stream ---
-const EXCHANGE_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
+const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
 
 // --- WebSocket Clients and State ---
-let internalWsClient, exchangeWsClient;
-let last_sent_price = null;
+let internalWsClient, binanceWsClient;
+let last_sent_trade_price = null;
 
 // Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
@@ -57,13 +56,18 @@ const payload_to_send = { type: 'S', p: 0.0 };
  */
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
-
+    
     internalWsClient = new WebSocket(internalReceiverUrl);
 
+    internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+    
     internalWsClient.on('close', () => {
+        console.error('[Internal] Connection closed. Reconnecting...');
         internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
+    
+    internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
 }
 
 /**
@@ -76,7 +80,7 @@ function sendToInternalClient(payload) {
             // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            // Error logging eliminated for performance
+            console.error(`[Internal] Failed to send message: ${e.message}`);
         }
     }
 }
@@ -84,47 +88,56 @@ function sendToInternalClient(payload) {
 /**
  * Establishes and maintains the connection to the Binance WebSocket stream.
  */
-function connectToExchange() {
-    exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
-
-    exchangeWsClient.on('open', () => {
-        last_sent_price = null; // Reset on new connection
+function connectToBinance() {
+    // --- MODIFIED: Using the new Futures URL variable ---
+    binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
+    
+    binanceWsClient.on('open', () => {
+        console.log(`[Binance] Connection established to stream: ${SYMBOL}@bookTicker`);
+        last_sent_trade_price = null; // Reset on new connection
     });
-
-    exchangeWsClient.on('message', (data) => {
+    
+    binanceWsClient.on('message', (data) => {
         try {
-            const message = JSON.parse(data.toString());
+            const messageStr = data.toString();
 
-            // --- MODIFIED: Process Binance bookTicker stream data ---
-            // bookTicker payload has a 'b' field for the best bid price. [1]
-            if (message && message.b) {
-                const bestBidPrice = parseFloat(message.b);
+            // Optimization: Manual string parsing to extract the best bid price.
+            // We are looking for the pattern: "b":"<price>"
+            const priceStartIndex = messageStr.indexOf('"b":"');
+            if (priceStartIndex === -1) return; // Best bid price key not found
 
-                if (isNaN(bestBidPrice)) return;
+            const valueStartIndex = priceStartIndex + 5; // Move past '"b":"'
+            const valueEndIndex = messageStr.indexOf('"', valueStartIndex);
+            if (valueEndIndex === -1) return; // Closing quote not found
 
-                const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
+            const priceStr = messageStr.substring(valueStartIndex, valueEndIndex);
+            const current_trade_price = parseFloat(priceStr);
 
-                if (shouldSendPrice) {
-                    // Optimization: Mutate the single payload object instead of creating a new one.
-                    payload_to_send.p = bestBidPrice;
-                    sendToInternalClient(payload_to_send);
-                    last_sent_price = bestBidPrice;
-                }
+            if (isNaN(current_trade_price)) return;
+
+            const shouldSendPrice = (last_sent_trade_price === null) || (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
+
+            if (shouldSendPrice) {
+                // Optimization: Mutate the single payload object instead of creating a new one.
+                payload_to_send.p = current_trade_price;
+                sendToInternalClient(payload_to_send);
+                last_sent_trade_price = current_trade_price;
             }
-        } catch (e) {
-             // Error logging eliminated for performance
+        } catch (e) { 
+            console.error(`[Binance] Error processing message: ${e.message}`);
         }
     });
 
-    exchangeWsClient.on('close', () => {
-        exchangeWsClient = null; // Important to allow reconnection
-        setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
+    binanceWsClient.on('error', (err) => console.error('[Binance] Connection error:', err.message));
+    
+    binanceWsClient.on('close', () => {
+        console.error('[Binance] Connection closed. Reconnecting...');
+        binanceWsClient = null; // Important to allow reconnection
+        setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
     });
-
-    // The 'ws' library automatically handles ping/pong frames from Binance.
-    // No custom heartbeat is needed.
 }
 
 // --- Script Entry Point ---
+console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToExchange();
+connectToBinance();
