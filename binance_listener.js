@@ -42,7 +42,7 @@ const MINIMUM_TICK_SIZE = 0.1;
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 // --- MODIFIED: Updated URL to Bybit V5 Spot stream ---
-const EXCHANGE_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
+const EXCHANGE_STREAM_URL = 'wss://stream.bybit.com/v5/public/linear';
 
 // --- WebSocket Clients and State ---
 let internalWsClient, exchangeWsClient;
